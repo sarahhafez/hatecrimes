@@ -1,0 +1,179 @@
+---
+title: '**Turbulent Times and Hate Crimes in the United States**'
+author: "Sarah Hafez"
+date: "Decemeber 17, 2021"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+header-includes:
+- \usepackage{setspace}\spacing{1.5}
+- \linespread{1.25}
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r echo=TRUE}
+library(MASS)
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(jtools)
+library(usmap)
+library(ggpubr)
+library(pander)
+```
+
+```{r}
+#importing the data
+id <- "1HZHK4qTTFTBDOqajQk2vLBUixaNE0X2l" # google file ID
+hatecrimes <- read.csv(sprintf("https://docs.google.com/uc?id=%s&export=download", id))
+```
+
+```{r}
+hatecrimes %<>%
+  filter(state!="Hawaii") %>%
+  mutate(trump_state = case_when(share_voters_voted_trump>=0.5 ~ 1,
+                                                         TRUE ~ 0)) #variable that specifies whether trump has majority of votes or not 
+
+hatecrimes2 <- hatecrimes %>%
+  filter(state!="District of Columbia") #the dataset with no outliers
+
+#dataset used for regression
+hatecrimes_for_reg <-  hatecrimes %>%
+  filter(state!="District of Columbia")%>%
+  dplyr::select(-c(trump_state,state, share_voters_voted_trump, hate_crimes_per_100k_splc))
+```
+
+### Comparisons of Means
+
+```{r include=FALSE}
+fbi_trump_states <- hatecrimes2 %>%  filter(trump_state==1) %>%
+  .[['avg_hatecrimes_per_100k_fbi']] %>% na.omit() #Pre-Elections Trump Majority
+
+mean(fbi_trump_states) 
+var(fbi_trump_states)
+
+fbi_non_trump_states <- hatecrimes2 %>%  filter(trump_state==0) %>%
+  .[['avg_hatecrimes_per_100k_fbi']] %>% na.omit() #Pre-Elections Trump Minority
+
+mean(fbi_non_trump_states) 
+var(fbi_non_trump_states)
+
+
+splc_trump_states <- hatecrimes2 %>%  filter(trump_state==1) %>%
+  .[['hate_crimes_per_100k_splc']] %>% na.omit() #Post-Elections Trump Majority
+
+mean(splc_trump_states) 
+var(splc_trump_states)
+
+splc_non_trump_states <- hatecrimes2 %>%  filter(trump_state==0) %>%
+  .[['hate_crimes_per_100k_splc']] %>% na.omit() #Pre-Elections Trump Minority
+
+mean(splc_non_trump_states)
+var(splc_non_trump_states)
+
+```
+
+The t-test
+
+```{r}
+t.test(splc_non_trump_states, splc_trump_states, var.equal = F) 
+t.test(fbi_non_trump_states, fbi_trump_states, var.equal = F) 
+```
+
+### FiveThiryEight's Linear Regression Model
+
+```{r}
+original_regression <- hatecrimes %>%
+  dplyr::select(-c(state, trump_state, share_voters_voted_trump, hate_crimes_per_100k_splc)) %>%
+  lm(avg_hatecrimes_per_100k_fbi ~ ., .)
+summary(original_regression)
+plot(original_regression, c(5))
+plot(original_regression, c(4))
+```
+
+### Linear Regression Model with No Outliers
+
+```{r}
+regression_no_dc <-lm(avg_hatecrimes_per_100k_fbi ~. , data=hatecrimes_for_reg)
+summary(regression_no_dc)
+plot(regression_no_dc, c(1, 5))
+```
+
+### AIC and Best Model
+
+```{r}
+stepAIC(regression_no_dc)
+best_linear <- lm(formula = avg_hatecrimes_per_100k_fbi ~ share_non_citizen + 
+    share_non_white, data = hatecrimes_for_reg)
+```
+
+### Poisson Regression
+
+```{r}
+mean(hatecrimes_for_reg$avg_hatecrimes_per_100k_fbi)
+var(hatecrimes_for_reg$avg_hatecrimes_per_100k_fb)
+```
+
+```{r}
+model_poisson <- glm(avg_hatecrimes_per_100k_fbi ~., family=quasipoisson(link="log"), data=hatecrimes_for_reg)
+summary(model_poisson)
+1-pchisq(deviance(model_poisson) , df.residual(model_poisson))
+plot(model_poisson, c(1, 2))
+```
+
+```{r}
+# Model with only non-white and non-citizen
+model_poisson_2 <- glm(avg_hatecrimes_per_100k_fbi ~share_non_white + share_non_citizen , family=quasipoisson(link="log"), data= hatecrimes_for_reg) 
+
+```
+
+```{r}
+anova(model_poisson_2, model_poisson)
+```
+
+```{r include=FALSE}
+1-pchisq(1.9419 , 6)
+```
+
+```{r fig.cap="Distribution of Hate Crime Data and Poisson", fig.show="hold", message=FALSE, warning=FALSE, out.width="50%"}
+crime <- 0:5
+
+plot(crime, dpois(crime, lambda=2), type='b', xlab="Hate Crime Count", ylab="Simulated Poisson PDF (lambda = 2)") 
+
+hatecrimes2 %>%
+ggplot(aes(x=avg_hatecrimes_per_100k_fbi)) +
+  geom_density(adjust=1, alpha=.5) +
+  labs(x="Pre-Elections Hate Crime Count", y="Density") +
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())
+
+```
+
+```{r fig.cap="Effect Plots of Non-White Population (Both Models)", fig.show="hold", message=FALSE, warning=FALSE, out.width="50%"}
+non_white_linear <- effect_plot(original_regression, pred=share_non_white, plot.points = T, interval = T) +
+  labs(x="Share Non-White", y="Hate Crimes Pre-Elections (Per 100,000)", title='Linear Model')
+
+
+non_white_poisson <- effect_plot(model_poisson, pred=share_non_white, plot.points = T, interval = T) +
+  labs(x="Share Non-White", y="Hate Crimes Pre-Elections (Per 100,000)", title='Poisson Model')
+
+#plot_grid(non_white_linear, non_white_poisson, align="h", nrow = 1, ncol = 2)
+non_white_linear
+non_white_poisson
+```
+
+```{r fig.cap="Effect Plots of Non-Citizens (Both Models)", fig.show="hold", message=FALSE, warning=FALSE, out.width="50%"}
+
+non_citizen_linear <- effect_plot(original_regression, pred=share_non_citizen, plot.points = T, interval = T)+ labs(x="Share Non-Citizen", y="Hate Crimes Pre-Elections (Per 100,000)" , title='Linear Model') 
+
+non_citizen_poisson <- effect_plot(model_poisson, pred=share_non_citizen, plot.points = T, interval = T)+ labs(x="Share Non-Citizen", y="Hate Crimes Pre-Elections (Per 100,000)", title='Poisson Model') 
+#plot_grid(non_citizen_linear, non_citizen_poisson, align="h", nrow = 1, ncol = 2)
+non_citizen_linear
+non_citizen_poisson
+```
